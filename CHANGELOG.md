@@ -2,6 +2,11 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.3.3 - 2026-02-23
+
+### CI
+- Publish installer artifacts automatically on tagged releases.
+
 ## 0.3.2 - 2026-02-21
 
 ### Fixes
