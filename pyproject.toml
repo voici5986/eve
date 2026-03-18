@@ -10,10 +10,16 @@ dependencies = [
   "silero-vad",
   "soundfile",
   "sounddevice",
+  "flet>=0.82.2",
+  "pystray>=0.19.5",
+  "pillow>=12.1.0",
+  "platformdirs>=4.5.1",
+  "pyobjc-framework-avfoundation>=12.1 ; sys_platform == 'darwin'",
 ]
 
 [project.scripts]
 eve = "eve.cli:main"
+eve-desktop = "eve.desktop_app:main"
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]

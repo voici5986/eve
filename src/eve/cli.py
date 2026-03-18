@@ -24,6 +24,12 @@ def main() -> int | None:
         from eve.transcribe_recordings import main as transcribe_main
 
         return transcribe_main()
+    if len(sys.argv) > 1 and sys.argv[1] == "desktop":
+        # `eve desktop` -> desktop launcher
+        sys.argv = [sys.argv[0], *sys.argv[2:]]
+        from eve.desktop_app import main as desktop_main
+
+        return desktop_main()
 
     from eve.record_eve_24h import main as record_main
 

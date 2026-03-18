@@ -17,6 +17,8 @@
 - 实时转写：录音过程中持续输出转写文本（JSON）。
 - VAD 语音检测：仅保留有人说话的片段，减少无效内容。
 - 麦克风自动切换：可自动探测并切到当前“有声”的输入设备。
+- 支持托盘常驻，并使用 Flet 提供设置小窗。
+- 支持桌面托盘模式开机自启动。
 - 轻量控制台反馈：单行音量条与状态提示，便于确认正在正常录音。
 - 日志式归档：录音与转写按日期归档，便于检索与复盘。
 - ASR 可关闭：支持离线/异步转写已有录音。
@@ -61,6 +63,12 @@ uv sync
 uv run eve
 ```
 
+如果要启动托盘常驻模式和 Flet 设置窗：
+
+```bash
+uv run eve desktop
+```
+
 ### 配置要求
 
 首次使用前请确认以下配置：
@@ -99,6 +107,9 @@ uv run --with pyinstaller scripts/build_installers.py
 
 安装包仅包含一个核心二进制 `eve`，可通过子命令 `eve transcribe` 执行异步转写，避免重复打包两份运行时。
 
+在 macOS 上，安装包现在还会把桌面应用放到 `/Applications/eve.app`，
+这样就可以直接从启动台、Finder、Spotlight 或 Dock 启动，而不需要再用终端命令。
+
 - macOS: `eve-<version>-macos-<arch>.pkg`
 - Linux: `eve_<version>_<arch>.deb`
 - Windows: `eve-<version>-windows-<arch>-setup.exe`
@@ -114,9 +125,19 @@ uv run --with pyinstaller scripts/build_installers.py
 仓库已新增工作流：`.github/workflows/build-installers.yml`
 
 - 手动触发：GitHub Actions `workflow_dispatch`
+  - 可选：设置 `publish_release=true` 并填写 `release_tag`，即可在手动构建后直接发布 GitHub Release
 - 自动触发：推送 `v*` tag（如 `v0.2.1`）
 
-工作流会在三个系统各自产出安装包并上传到 Actions Artifacts。
+工作流会在 macOS / Linux / Windows 三个平台各自产出安装包并上传到 Actions Artifacts。
+Tag 触发的 Release 会上传 `.pkg`、`.deb`、`.exe` 以及 `SHA256SUMS.txt`。
+
+CI 默认构建未签名的 macOS 安装包，这样即使没有 Apple 签名凭证也可以正常运行。
+如果后续要接入签名，可以先在 GitHub Actions 中预留这些 secrets：
+
+- `MACOS_CERTIFICATE_P12_BASE64`
+- `MACOS_CERTIFICATE_PASSWORD`
+- `MACOS_CODESIGN_IDENTITY`
+- `MACOS_INSTALLER_IDENTITY`
 
 ### 3) 默认行为
 
@@ -179,6 +200,15 @@ eve --no-console-feedback
 ```bash
 eve --output-dir recordings --segment-minutes 30 --total-hours 3
 ```
+
+### 桌面托盘模式
+
+```bash
+eve desktop
+```
+
+托盘模式会把设置窗默认隐藏，需要时再打开。GUI 修改的配置会写入用户配置目录，
+并作为 `eve` 与 `eve transcribe` 的默认值。
 
 ### 录音但不转写（关闭 ASR）
 

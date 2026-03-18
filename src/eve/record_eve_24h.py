@@ -8,9 +8,11 @@ from .utils.version_utils import get_eve_version
 from .asr.qwen import QwenASRTranscriber
 from .recorders.live_vad_recorder import LiveVadRecorder
 from .recorders.silero_vad import SileroVAD
+from .settings import load_settings, recording_defaults
 
 
 def build_parser() -> argparse.ArgumentParser:
+    loaded_settings = load_settings()
     parser = argparse.ArgumentParser(
         description=(
             "Record system microphone continuously for 24 hours and archive in segments. "
@@ -200,10 +202,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=3.0,
         help="Wait time to consider a segment file stable.",
     )
+    parser.set_defaults(**recording_defaults(loaded_settings))
     return parser
 
 
-def build_transcriber(args: argparse.Namespace) -> QwenASRTranscriber:
+def build_transcriber(args) -> QwenASRTranscriber:
     forced_aligner = None
     return_time_stamps = False
 
@@ -233,11 +236,6 @@ def build_transcriber(args: argparse.Namespace) -> QwenASRTranscriber:
 
 
 def run_recording(args: argparse.Namespace) -> int:
-    device_text = str(args.device or "").strip().lower()
-    auto_switch_enabled = args.auto_switch_device
-    if auto_switch_enabled is None:
-        auto_switch_enabled = device_text in ("", "default", "auto")
-
     show_recording_welcome(
         output_dir=args.output_dir,
         device=args.device,
@@ -247,40 +245,10 @@ def run_recording(args: argparse.Namespace) -> int:
         segment_minutes=args.segment_minutes,
         total_hours=args.total_hours,
     )
-    transcriber = None
-    if not args.disable_asr:
-        transcriber = build_transcriber(args)
+    recorder = create_live_recorder(args)
     logging.getLogger(__name__).info(
         "Starting recording... Press Ctrl+C to stop early."
     )
-    recorder = LiveVadRecorder(
-        output_dir=args.output_dir,
-        prefix="eve",
-        device=args.device,
-        vad=SileroVAD(),
-        transcriber=transcriber,
-    )
-    recorder.config.archive_audio_format = args.audio_format
-    recorder.config.max_segment_minutes = args.segment_minutes
-    recorder.config.device_check_seconds = args.device_check_seconds
-    recorder.config.device_retry_seconds = args.device_retry_seconds
-    recorder.config.auto_switch_enabled = auto_switch_enabled
-    recorder.config.auto_switch_scan_seconds = args.auto_switch_scan_seconds
-    recorder.config.auto_switch_probe_seconds = args.auto_switch_probe_seconds
-    recorder.config.auto_switch_max_candidates_per_scan = (
-        args.auto_switch_max_candidates_per_scan
-    )
-    recorder.config.excluded_input_keywords = tuple(
-        item.strip().lower()
-        for item in args.exclude_device_keywords.split(",")
-        if item.strip()
-    )
-    recorder.config.auto_switch_min_rms = args.auto_switch_min_rms
-    recorder.config.auto_switch_min_ratio = args.auto_switch_min_ratio
-    recorder.config.auto_switch_cooldown_seconds = args.auto_switch_cooldown_seconds
-    recorder.config.auto_switch_confirmations = args.auto_switch_confirmations
-    recorder.config.console_feedback_enabled = args.console_feedback
-    recorder.config.console_feedback_hz = args.console_feedback_hz
     try:
         recorder.start()
         return_code = 0
@@ -291,6 +259,52 @@ def run_recording(args: argparse.Namespace) -> int:
     finally:
         pass
     return return_code
+
+
+def resolve_auto_switch_enabled(options) -> bool:
+    device_text = str(options.device or "").strip().lower()
+    auto_switch_enabled = options.auto_switch_device
+    if auto_switch_enabled is None:
+        return device_text in ("", "default", "auto")
+    return bool(auto_switch_enabled)
+
+
+def create_live_recorder(options) -> LiveVadRecorder:
+    auto_switch_enabled = resolve_auto_switch_enabled(options)
+    transcriber = None
+    if not options.disable_asr:
+        transcriber = build_transcriber(options)
+    recorder = LiveVadRecorder(
+        output_dir=options.output_dir,
+        prefix="eve",
+        device=options.device,
+        vad=SileroVAD(),
+        transcriber=transcriber,
+    )
+    recorder.config.archive_audio_format = options.audio_format
+    recorder.config.max_segment_minutes = options.segment_minutes
+    recorder.config.device_check_seconds = options.device_check_seconds
+    recorder.config.device_retry_seconds = options.device_retry_seconds
+    recorder.config.auto_switch_enabled = auto_switch_enabled
+    recorder.config.auto_switch_scan_seconds = options.auto_switch_scan_seconds
+    recorder.config.auto_switch_probe_seconds = options.auto_switch_probe_seconds
+    recorder.config.auto_switch_max_candidates_per_scan = (
+        options.auto_switch_max_candidates_per_scan
+    )
+    recorder.config.excluded_input_keywords = tuple(
+        item.strip().lower()
+        for item in options.exclude_device_keywords.split(",")
+        if item.strip()
+    )
+    recorder.config.auto_switch_min_rms = options.auto_switch_min_rms
+    recorder.config.auto_switch_min_ratio = options.auto_switch_min_ratio
+    recorder.config.auto_switch_cooldown_seconds = (
+        options.auto_switch_cooldown_seconds
+    )
+    recorder.config.auto_switch_confirmations = options.auto_switch_confirmations
+    recorder.config.console_feedback_enabled = options.console_feedback
+    recorder.config.console_feedback_hz = options.console_feedback_hz
+    return recorder
 
 
 def main() -> int:

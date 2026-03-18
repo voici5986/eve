@@ -9,6 +9,7 @@ from .asr.qwen import QwenASRTranscriber
 from .utils.console_ui import show_transcribe_welcome, startup_status
 from .utils.logging_utils import init_logging
 from .utils.version_utils import get_eve_version
+from .settings import load_settings, transcribe_defaults
 from .utils.segment_utils import (
     audio_basename,
     iso_now,
@@ -29,6 +30,7 @@ SUPPORTED_AUDIO_EXTENSIONS = (".wav", ".flac")
 
 
 def build_parser() -> argparse.ArgumentParser:
+    loaded_settings = load_settings()
     parser = argparse.ArgumentParser(
         description=(
             "Transcribe existing audio recordings (WAV/FLAC) and write/update JSON transcripts. "
@@ -118,6 +120,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Load ASR model before transcription starts.",
     )
+    parser.set_defaults(**transcribe_defaults(loaded_settings))
     return parser
 
 

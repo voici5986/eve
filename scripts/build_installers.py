@@ -79,33 +79,25 @@ def resolve_package_dir(package_name: str) -> Path | None:
     return Path(next(iter(spec.submodule_search_locations))).resolve()
 
 
-def build_binary(temp_dir: Path) -> tuple[Path, Path]:
-    dist_dir = temp_dir / "dist"
-    work_dir = temp_dir / "build"
-    spec_dir = temp_dir / "spec"
-    dist_dir.mkdir(parents=True, exist_ok=True)
-    work_dir.mkdir(parents=True, exist_ok=True)
-    spec_dir.mkdir(parents=True, exist_ok=True)
-
-    pyinstaller_cmd = [
+def common_pyinstaller_args(dist_dir: Path, work_dir: Path, spec_dir: Path) -> list[str]:
+    return [
         sys.executable,
         "-m",
         "PyInstaller",
         "--noconfirm",
         "--clean",
-        "--onedir",
-        "--name",
-        "eve",
         "--distpath",
         str(dist_dir),
         "--workpath",
-        str(work_dir / "eve"),
+        str(work_dir),
         "--specpath",
         str(spec_dir),
         "--copy-metadata",
         "eve",
     ]
 
+
+def add_common_hidden_imports(pyinstaller_cmd: list[str]) -> None:
     # nagisa uses absolute imports like `import prepro` and mutates sys.path at runtime.
     # Add its package directory to PyInstaller's module search path and include those modules explicitly.
     nagisa_dir = resolve_package_dir("nagisa")
@@ -124,19 +116,60 @@ def build_binary(temp_dir: Path) -> tuple[Path, Path]:
             "--hidden-import",
             "train",
             "--hidden-import",
+            "AVFoundation",
+            "--hidden-import",
+            "CoreAudio",
+            "--hidden-import",
+            "CoreMedia",
+            "--hidden-import",
             "silero_vad.data",
+            "--collect-submodules",
+            "flet",
+            "--collect-submodules",
+            "pystray",
+            "--collect-submodules",
+            "PIL",
             # Rich loads unicode tables via dynamic module names like
             # `rich._unicode_data.unicode17-0-0`, which static analysis misses.
             "--collect-submodules",
             "rich._unicode_data",
             "--collect-data",
+            "flet",
+            "--collect-data",
             "nagisa",
+            "--collect-data",
+            "PIL",
+            "--collect-data",
+            "pystray",
             "--collect-data",
             "qwen_asr",
             "--collect-data",
             "silero_vad",
         ]
     )
+
+
+def build_binary(temp_dir: Path) -> tuple[Path, Path]:
+    dist_dir = temp_dir / "dist"
+    work_dir = temp_dir / "build"
+    spec_dir = temp_dir / "spec"
+    dist_dir.mkdir(parents=True, exist_ok=True)
+    work_dir.mkdir(parents=True, exist_ok=True)
+    spec_dir.mkdir(parents=True, exist_ok=True)
+
+    pyinstaller_cmd = common_pyinstaller_args(
+        dist_dir=dist_dir,
+        work_dir=work_dir / "eve-cli",
+        spec_dir=spec_dir,
+    )
+    pyinstaller_cmd.extend(
+        [
+        "--onedir",
+        "--name",
+        "eve",
+        ]
+    )
+    add_common_hidden_imports(pyinstaller_cmd)
     pyinstaller_cmd.append(str(ENTRYPOINT_DIR / "eve_cli.py"))
 
     run(pyinstaller_cmd)
@@ -149,6 +182,39 @@ def build_binary(temp_dir: Path) -> tuple[Path, Path]:
     return eve_binary, app_dir
 
 
+def build_macos_desktop_app(temp_dir: Path) -> Path:
+    dist_dir = temp_dir / "dist"
+    work_dir = temp_dir / "build"
+    spec_dir = temp_dir / "spec"
+    dist_dir.mkdir(parents=True, exist_ok=True)
+    work_dir.mkdir(parents=True, exist_ok=True)
+    spec_dir.mkdir(parents=True, exist_ok=True)
+
+    pyinstaller_cmd = common_pyinstaller_args(
+        dist_dir=dist_dir,
+        work_dir=work_dir / "eve-desktop",
+        spec_dir=spec_dir,
+    )
+    pyinstaller_cmd.extend(
+        [
+            "--windowed",
+            "--name",
+            "eve",
+            "--osx-bundle-identifier",
+            "build.nexmoe.eve",
+        ]
+    )
+    add_common_hidden_imports(pyinstaller_cmd)
+    pyinstaller_cmd.append(str(ENTRYPOINT_DIR / "eve_desktop.py"))
+
+    run(pyinstaller_cmd)
+
+    app_bundle = dist_dir / "eve.app"
+    if not app_bundle.exists():
+        raise RuntimeError("PyInstaller build did not produce the expected eve.app bundle.")
+    return app_bundle
+
+
 def copy_binary(binary_path: Path, target_path: Path) -> None:
     target_path.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(binary_path, target_path)
@@ -157,7 +223,7 @@ def copy_binary(binary_path: Path, target_path: Path) -> None:
 def copy_bundle(source_dir: Path, target_dir: Path) -> None:
     if target_dir.exists():
         shutil.rmtree(target_dir)
-    shutil.copytree(source_dir, target_dir)
+    shutil.copytree(source_dir, target_dir, symlinks=True)
 
 
 def write_unix_launcher(path: Path, target_binary: str) -> None:
@@ -175,14 +241,23 @@ def write_unix_launcher(path: Path, target_binary: str) -> None:
     make_executable(path)
 
 
-def build_macos_pkg(version: str, arch: str, eve_app_dir: Path, output_dir: Path, temp_dir: Path) -> Path:
+def build_macos_pkg(
+    version: str,
+    arch: str,
+    eve_app_dir: Path,
+    eve_desktop_app: Path,
+    output_dir: Path,
+    temp_dir: Path,
+) -> Path:
     if shutil.which("pkgbuild") is None:
         raise RuntimeError("pkgbuild is required on macOS to create a .pkg installer.")
 
     pkg_root = temp_dir / "pkgroot"
     install_bin_dir = pkg_root / "usr" / "local" / "bin"
     install_lib_dir = pkg_root / "usr" / "local" / "lib" / "eve"
+    applications_dir = pkg_root / "Applications"
     copy_bundle(eve_app_dir, install_lib_dir)
+    copy_bundle(eve_desktop_app, applications_dir / "eve.app")
     write_unix_launcher(install_bin_dir / "eve", "/usr/local/lib/eve/eve")
     run(["xattr", "-cr", str(pkg_root)])
     for metadata_file in pkg_root.rglob("._*"):
@@ -324,13 +399,18 @@ def main() -> int:
         _, eve_app_dir = build_binary(temp_dir=temp_dir)
 
         if target == "macos":
+            eve_desktop_app = build_macos_desktop_app(temp_dir=temp_dir)
+            desktop_app_output = output_dir / f"eve-{version}-macos-{arch}.app"
+            copy_bundle(eve_desktop_app, desktop_app_output)
             installer = build_macos_pkg(
                 version=version,
                 arch=arch,
                 eve_app_dir=eve_app_dir,
+                eve_desktop_app=eve_desktop_app,
                 output_dir=output_dir,
                 temp_dir=temp_dir,
             )
+            print(f"Desktop app generated: {desktop_app_output}")
         elif target == "linux":
             installer = build_linux_deb(
                 version=version,

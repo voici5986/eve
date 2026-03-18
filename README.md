@@ -17,6 +17,8 @@ Before fully digitalizing my memory, I want to preserve my voice data continuous
 - Real-time transcription to JSON during recording.
 - VAD-based speech detection to skip silence and reduce noise.
 - Automatic microphone switching to the currently active input source.
+- Desktop tray mode with a Flet settings popup.
+- Launch-at-login support for the desktop tray helper.
 - Lightweight console feedback with single-line level/status output.
 - Date-based archival for both audio and transcription files.
 - Optional ASR disable mode for recording-only workflows.
@@ -61,6 +63,12 @@ uv sync
 uv run eve
 ```
 
+To launch the desktop tray helper with the Flet settings popup:
+
+```bash
+uv run eve desktop
+```
+
 ### Configuration Requirements
 
 Before first run, confirm the following:
@@ -99,6 +107,10 @@ Default output directory: `dist/installers/`
 
 Installers contain one core binary `eve`. Offline transcription is available through `eve transcribe`, so there is no duplicate runtime packaging.
 
+On macOS, the installer now also places a desktop app bundle at
+`/Applications/eve.app`, so you can launch it directly from Launchpad, Finder,
+Spotlight, or pin it to the Dock without using the terminal.
+
 - macOS: `eve-<version>-macos-<arch>.pkg`
 - Linux: `eve_<version>_<arch>.deb`
 - Windows: `eve-<version>-windows-<arch>-setup.exe`
@@ -114,9 +126,19 @@ Local prerequisites:
 Workflow file: `.github/workflows/build-installers.yml`
 
 - Manual trigger: GitHub Actions `workflow_dispatch`
+  - Optional: set `publish_release=true` and provide `release_tag` to publish a GitHub Release directly from the manual run
 - Automatic trigger: push a `v*` tag (for example `v0.2.1`)
 
-Artifacts for each OS are uploaded to GitHub Actions Artifacts.
+Artifacts for macOS / Linux / Windows are uploaded to GitHub Actions Artifacts.
+Tag-triggered releases upload `.pkg`, `.deb`, `.exe`, and `SHA256SUMS.txt`.
+
+By default, CI builds unsigned macOS artifacts. This keeps the workflow usable without Apple signing credentials.
+If you want to enable signing later, reserve these secrets in GitHub Actions and wire the signing steps in CI:
+
+- `MACOS_CERTIFICATE_P12_BASE64`
+- `MACOS_CERTIFICATE_PASSWORD`
+- `MACOS_CODESIGN_IDENTITY`
+- `MACOS_INSTALLER_IDENTITY`
 
 ### 3) Default Behavior
 
@@ -180,6 +202,16 @@ eve --no-console-feedback
 ```bash
 eve --output-dir recordings --segment-minutes 30 --total-hours 3
 ```
+
+### Desktop tray mode
+
+```bash
+eve desktop
+```
+
+The tray helper keeps a small Flet settings window hidden until needed. GUI
+changes are stored in the user config directory and become the default values
+for both `eve` and `eve transcribe`.
 
 ### Record without transcription (disable ASR)
 

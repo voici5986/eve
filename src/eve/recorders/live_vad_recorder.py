@@ -71,6 +71,21 @@ class VadConfig:
     console_asr_history_size: int = 8
 
 
+@dataclass(frozen=True)
+class RecorderFeedbackSnapshot:
+    elapsed: str
+    rms: float
+    db: float
+    level_ratio: float
+    in_speech: bool
+    device_label: str
+    auto_switch_enabled: bool
+    asr_enabled: bool
+    asr_preview: str
+    asr_history: list[str]
+    waveform_bins: list[float]
+
+
 class LiveVadRecorder:
     def __init__(
         self,
@@ -131,6 +146,7 @@ class LiveVadRecorder:
         self._asr_history: deque[tuple[str, str]] = deque(
             maxlen=self.config.console_asr_history_size
         )
+        self._recent_waveform_samples: deque[float] = deque(maxlen=4096)
         self._console_state_lock = threading.Lock()
         self._logger = logging.getLogger(__name__)
 
@@ -150,6 +166,86 @@ class LiveVadRecorder:
         self._asr_queue.put(self._asr_worker_sentinel)
         self._asr_worker.join(timeout=0.5)
         self._asr_worker = None
+
+    def _clear_pending_asr_state(self) -> None:
+        with self._asr_json_lock:
+            self._asr_pending_jobs.clear()
+        try:
+            while True:
+                self._asr_queue.get_nowait()
+        except queue.Empty:
+            pass
+        with self._console_state_lock:
+            self._last_asr_preview = ""
+            self._last_asr_preview_time = 0.0
+            self._asr_history.clear()
+
+    def disable_live_asr(self) -> None:
+        self.transcriber = None
+        self._clear_pending_asr_state()
+        self._stop_asr_worker()
+        self._update_live_json_runtime_state()
+
+    def enable_live_asr(self, transcriber) -> None:
+        self.transcriber = transcriber
+        self._clear_pending_asr_state()
+        self._start_asr_worker()
+        self._update_live_json_runtime_state()
+
+    def apply_runtime_settings(self, settings) -> None:
+        self.output_dir = str(settings.output_dir)
+        self.config.archive_audio_format = str(settings.audio_format)
+        self.config.max_segment_minutes = float(settings.segment_minutes)
+        self.config.device_check_seconds = float(settings.device_check_seconds)
+        self.config.device_retry_seconds = float(settings.device_retry_seconds)
+        self.config.auto_switch_enabled = bool(settings.auto_switch_device)
+        self.config.auto_switch_scan_seconds = float(settings.auto_switch_scan_seconds)
+        self.config.auto_switch_probe_seconds = float(settings.auto_switch_probe_seconds)
+        self.config.auto_switch_max_candidates_per_scan = int(
+            settings.auto_switch_max_candidates_per_scan
+        )
+        self.config.excluded_input_keywords = tuple(
+            item.strip().lower()
+            for item in str(settings.exclude_device_keywords).split(",")
+            if item.strip()
+        )
+        self.config.auto_switch_min_rms = float(settings.auto_switch_min_rms)
+        self.config.auto_switch_min_ratio = float(settings.auto_switch_min_ratio)
+        self.config.auto_switch_cooldown_seconds = float(
+            settings.auto_switch_cooldown_seconds
+        )
+        self.config.auto_switch_confirmations = int(settings.auto_switch_confirmations)
+        self.config.console_feedback_enabled = bool(settings.console_feedback)
+        self.config.console_feedback_hz = float(settings.console_feedback_hz)
+        self._update_live_json_runtime_state()
+
+    def _update_live_json_runtime_state(self) -> None:
+        if not self._live_json_path:
+            return
+        with self._asr_json_lock:
+            try:
+                with open(self._live_json_path, "r", encoding="utf-8") as handle:
+                    data = json.load(handle)
+                if not isinstance(data, dict):
+                    data = {}
+            except Exception:
+                data = {}
+            data["auto_switch_device"] = self.config.auto_switch_enabled
+            data["asr_enabled"] = self.transcriber is not None
+            data["asr_mode"] = "live" if self.transcriber is not None else "disabled"
+            if self.transcriber is not None:
+                data["model"] = self.transcriber.model_name
+                data["backend"] = self.transcriber.backend
+                data["device"] = self.transcriber._resolved_device
+                data["dtype"] = self.transcriber._resolved_dtype
+            else:
+                data["model"] = None
+                data["backend"] = None
+                data["device"] = None
+                data["dtype"] = None
+                if data.get("status") == "pending_asr":
+                    data["status"] = "recording" if self._writer is not None else "audio_only"
+            write_json_atomic(self._live_json_path, data)
 
     def _asr_worker_loop(self) -> None:
         while True:
@@ -523,6 +619,45 @@ class LiveVadRecorder:
         if max_len <= 3:
             return text[:max_len]
         return text[: max_len - 3] + "..."
+
+    def feedback_snapshot(self) -> RecorderFeedbackSnapshot:
+        now = time.time()
+        return RecorderFeedbackSnapshot(
+            elapsed=self._format_elapsed(),
+            rms=float(self._last_input_rms),
+            db=float(self._rms_to_db(self._last_input_rms)),
+            level_ratio=float(self._scale_rms_to_ratio(self._last_input_rms)),
+            in_speech=bool(self._in_speech),
+            device_label=str(self._active_input_device_label),
+            auto_switch_enabled=bool(self.config.auto_switch_enabled),
+            asr_enabled=bool(self.transcriber is not None),
+            asr_preview=self._get_console_asr_preview(now),
+            asr_history=self._get_console_asr_history_preview(max_lines=3),
+            waveform_bins=self._build_waveform_bins(),
+        )
+
+    def _push_waveform_chunk(self, chunk: np.ndarray) -> None:
+        samples = np.asarray(chunk, dtype=np.float32).reshape(-1)
+        if samples.size == 0:
+            return
+        with self._console_state_lock:
+            self._recent_waveform_samples.extend(float(sample) for sample in samples)
+
+    def _build_waveform_bins(self, bin_count: int = 32) -> list[float]:
+        with self._console_state_lock:
+            samples = np.asarray(self._recent_waveform_samples, dtype=np.float32)
+        if samples.size == 0:
+            return [0.0] * bin_count
+        bins: list[float] = []
+        for segment in np.array_split(samples, bin_count):
+            if segment.size == 0:
+                bins.append(0.0)
+                continue
+            peak = float(np.percentile(np.abs(segment), 90))
+            bins.append(min(1.0, math.sqrt(max(0.0, peak) * 12.0)))
+        if len(bins) < bin_count:
+            bins.extend([0.0] * (bin_count - len(bins)))
+        return bins[:bin_count]
 
     def _render_console_feedback(self, *, force: bool = False) -> None:
         stream = self._console_feedback_stream()
@@ -918,7 +1053,7 @@ class LiveVadRecorder:
             if status != "ok":
                 if self.transcriber is None:
                     if self._had_speech:
-                        status = "pending_asr"
+                        status = "audio_only"
                     else:
                         status = "no_speech"
                 else:
@@ -1064,6 +1199,7 @@ class LiveVadRecorder:
                     if len(chunk) != chunk_samples:
                         continue
                     chunk_rms = self._measure_rms(chunk)
+                    self._push_waveform_chunk(chunk)
                     if self._last_input_rms <= 0:
                         self._last_input_rms = chunk_rms
                     else:
