@@ -2,6 +2,11 @@
 
 All notable changes to this project are documented in this file.
 
+## 0.4.1 - 2026-03-18
+
+### CI
+- Temporarily remove Ubuntu installer builds from GitHub Actions matrix.
+
 ## 0.4.0 - 2026-03-18
 
 ### Features
